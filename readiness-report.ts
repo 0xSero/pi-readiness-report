@@ -70,6 +70,7 @@ type Report = {
 	languages: string[];
 	apps: AppInfo[];
 	model?: { provider: string; id: string };
+	aiPrompt?: string;
 	maturity: {
 		levelAchieved: number;
 		score: number;
@@ -420,9 +421,56 @@ const walkFiles = (dir: string, depth = 0, results: string[] = []) => {
 	return results;
 };
 
+const walkFilesAll = (dir: string, results: string[] = []) => {
+	for (const entry of listFiles(dir)) {
+		if (entry.name.startsWith(".")) continue;
+		const full = path.join(dir, entry.name);
+		if (entry.isDirectory()) {
+			if (EXCLUDED_DIRS.has(entry.name)) continue;
+			walkFilesAll(full, results);
+		} else if (entry.isFile()) {
+			results.push(full);
+		}
+	}
+	return results;
+};
+
 const hasMatchingFile = (dir: string, matcher: RegExp) => walkFiles(dir).some((file) => matcher.test(file));
 
 const formatScore = (numerator: number, denominator: number) => (denominator === 0 ? "N/A" : `${numerator}/${denominator}`);
+
+const buildRepoSnapshot = (repoRoot: string, maxFiles = 2000, maxLargestFiles = 8, maxChars = 4000) => {
+	const files = walkFilesAll(repoRoot).slice(0, maxFiles);
+	const tree = files.map((file) => path.relative(repoRoot, file)).sort();
+	const largest = files
+		.map((file) => {
+			try {
+				const stat = fs.statSync(file);
+				return { file, size: stat.size };
+			} catch {
+				return { file, size: 0 };
+			}
+		})
+		.sort((a, b) => b.size - a.size)
+		.slice(0, maxLargestFiles)
+		.map((entry) => {
+			const content = readText(entry.file) ?? "";
+			const snippet = content.slice(0, maxChars);
+			return {
+				path: path.relative(repoRoot, entry.file),
+				size: entry.size,
+				snippet: snippet || "<binary or empty>",
+			};
+		});
+
+	return [
+		"FILE TREE (truncated if huge):",
+		...tree,
+		"",
+		"LARGEST FILES (truncated snippets):",
+		...largest.map((entry) => `# ${entry.path} (${entry.size} bytes)\n${entry.snippet}`),
+	].join("\n");
+};
 
 const hasCodeFormatter = (root: string, app: AppInfo) =>
 	hasAnyFile(root, [".prettierrc", ".prettierrc.js", ".prettierrc.cjs", ".prettierrc.json", "prettier.config.js", "prettier.config.cjs"]) ||
@@ -1885,7 +1933,7 @@ const renderLevelChart = (history: { generatedAt: string; level: number }[]) => 
 const renderCategoryChart = (categories: { name: string; passRate: number | null }[]) => {
 	if (categories.length === 0) return "";
 	const width = 620;
-	const height = 220;
+	const height = 240;
 	const padding = 32;
 	const barWidth = (width - padding * 2) / categories.length;
 	return `
@@ -1899,7 +1947,7 @@ const renderCategoryChart = (categories: { name: string; passRate: number | null
 					const y = height - padding - barHeight;
 					const labelY = height - 10;
 					return `
-						<rect x="${x + 6}" y="${y}" width="${barWidth - 12}" height="${barHeight}" rx="6" fill="var(--accent)" />
+						<rect x="${x + 6}" y="${y}" width="${barWidth - 12}" height="${barHeight}" rx="6" fill="var(--accent-strong)" opacity="0.6" />
 						<text x="${x + barWidth / 2}" y="${labelY}" text-anchor="middle" fill="var(--muted)" font-size="10">${category.name}</text>
 						<text x="${x + barWidth / 2}" y="${y - 6}" text-anchor="middle" fill="var(--text)" font-size="10">${
 							category.passRate === null ? "N/A" : `${Math.round(rate * 100)}%`
@@ -1928,10 +1976,10 @@ const renderHtml = (report: Report) => {
 				.join("");
 			return `<tr>
 				<td>${item.category}</td>
-				<td>${item.tier}</td>
+				<td><span class="badge-pill">${item.tier}</span></td>
 				<td>${item.title}</td>
 				<td>${formatScore(item.numerator, item.denominator)}</td>
-				<td class="${statusClass}">${status}</td>
+				<td class="${statusClass}"><span class="badge-pill">${status}</span></td>
 				<td><ul>${reasons}</ul></td>
 			</tr>`;
 		})
@@ -2019,8 +2067,11 @@ const renderHtml = (report: Report) => {
 			animation: fade-in 0.2s ease;
 		}
 		code, pre { font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+		pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: 0.5rem; padding: 16px; overflow: auto; max-height: 360px; }
 		a { color: var(--accent-strong); text-decoration: none; }
 		a:hover { text-decoration: underline; }
+		details { margin-bottom: 12px; border: 1px solid var(--border); border-radius: 0.5rem; padding: 12px; background: var(--surface-2); }
+		summary { cursor: pointer; font-weight: 600; }
 		.container { max-width: 1100px; margin: 0 auto; padding: 32px; }
 		.card {
 			background: var(--surface);
@@ -2040,9 +2091,9 @@ const renderHtml = (report: Report) => {
 		table { width: 100%; border-collapse: collapse; }
 		th, td { text-align: left; padding: 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
 		th { background: var(--surface-2); }
-		.ok { color: #15803d; font-weight: 600; }
-		.warn { color: #b45309; font-weight: 600; }
+		.ok, .warn { color: var(--text); font-weight: 600; }
 		.na { color: var(--muted); font-weight: 600; }
+		.badge-pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); font-size: 12px; }
 		ul { margin: 0; padding-left: 20px; }
 		.note { color: var(--muted); font-size: 0.95rem; }
 		footer { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 24px 0; }
@@ -2112,17 +2163,49 @@ const renderHtml = (report: Report) => {
 			</table>
 		</div>
 		<div class="card">
+			<h2>AI Prompt (Repo Snapshot)</h2>
+			<p class="note">This is the exact prompt sent to the model.</p>
+			<pre>${report.aiPrompt ? report.aiPrompt.replace(/</g, "&lt;") : "No AI prompt generated."}</pre>
+		</div>
+		<div class="card">
 			<h2>Level Over Time</h2>
 			${levelChart || "<p class=\"note\">No historical reports yet.</p>"}
 		</div>
 		<div class="card">
 			<h2>Criteria Results</h2>
-			<table>
-				<thead>
-					<tr><th>Category</th><th>Tier</th><th>Criterion</th><th>Score</th><th>Status</th><th>Details</th></tr>
-				</thead>
-				<tbody>${criteriaRows}</tbody>
-			</table>
+			<p class="note">Expand each category to review the detailed checks.</p>
+			${report.categories
+				.map((category) => {
+					const items = report.criteria.filter((item) => item.category === category.name);
+					const rows = items
+						.map((item) => {
+							const status = item.applicable ? (item.passed ? "Passed" : "Needs Work") : "N/A";
+							const statusClass = item.applicable ? (item.passed ? "ok" : "warn") : "na";
+							const reasons = item.reasons
+								.map((reason) => `<li><strong>${reason.target}</strong>: ${reason.details}</li>`)
+								.join("");
+							return `<tr>
+								<td><span class=\"badge-pill\">${item.tier}</span></td>
+								<td>${item.title}</td>
+								<td>${formatScore(item.numerator, item.denominator)}</td>
+								<td class=\"${statusClass}\"><span class=\"badge-pill\">${status}</span></td>
+								<td><ul>${reasons}</ul></td>
+							</tr>`;
+						})
+						.join("");
+					const percent = category.passRate === null ? "N/A" : `${Math.round(category.passRate * 100)}%`;
+					return `
+						<details>
+							<summary><strong>${category.name}</strong> — ${category.passed}/${category.total} (${percent})</summary>
+							<table>
+								<thead>
+									<tr><th>Tier</th><th>Criterion</th><th>Score</th><th>Status</th><th>Details</th></tr>
+								</thead>
+								<tbody>${rows}</tbody>
+							</table>
+						</details>`;
+				})
+				.join("")}
 		</div>
 		<div class="card">
 			<h2>Viewing Historical Reports</h2>
@@ -2138,7 +2221,7 @@ const renderHtml = (report: Report) => {
 </html>`;
 };
 
-const buildNarrativePrompt = (report: Report) => {
+const buildNarrativePrompt = (report: Report, repoSnapshot: string) => {
 	const summary = {
 		repo: report.repoName,
 		level: report.maturity.levelAchieved,
@@ -2146,24 +2229,26 @@ const buildNarrativePrompt = (report: Report) => {
 		apps: report.apps.map((app) => ({ path: app.relativePath, type: app.type, description: app.description })),
 		actionItems: report.actionItems,
 		criteria: report.criteria.map((item) => ({
-			level: item.level,
+			category: item.category,
+			tier: item.tier,
 			title: item.title,
 			score: `${item.numerator}/${item.denominator}`,
-			passed: item.passed,
+			status: item.applicable ? (item.passed ? "passed" : "needs work") : "n/a",
 		})),
 	};
 
 	return [
-		"You are generating a readiness report summary for a software repository.",
-		"Write in Markdown with sections: Executive Summary, Strengths, Gaps, Next Actions.",
-		"Keep it concise and grounded in the data provided.",
-		"Do not invent tooling that is not in the data.",
-		"Data:",
+		"You are reviewing a software repository for readiness.",
+		"Provide a concise Markdown summary with sections: Executive Summary, Strengths, Gaps, Next Actions.",
+		"Use only the data provided. Do not invent tooling or files.",
+		"Repository snapshot:",
+		repoSnapshot,
+		"Structured metrics:",
 		JSON.stringify(summary, null, 2),
 	].join("\n");
 };
 
-const generateNarrative = async (report: Report, ctx: ExtensionCommandContext, args: string) => {
+const generateNarrative = async (prompt: string, ctx: ExtensionCommandContext, args: string) => {
 	const modelRef = resolveModelRef(ctx, args);
 	if (!modelRef) return undefined;
 	const model = ctx.modelRegistry.find(modelRef.provider, modelRef.id);
@@ -2177,13 +2262,14 @@ const generateNarrative = async (report: Report, ctx: ExtensionCommandContext, a
 		ctx.ui.setWidget("readiness-report-progress", [
 			"AI review: running",
 			`Model: ${modelRef.provider}/${modelRef.id}`,
+			`Prompt size: ${prompt.length.toLocaleString()} chars`,
 		]);
 	}
 
 	const messages = [
 		{
 			role: "user" as const,
-			content: [{ type: "text" as const, text: buildNarrativePrompt(report) }],
+			content: [{ type: "text" as const, text: prompt }],
 			timestamp: Date.now(),
 		},
 	];
@@ -2295,6 +2381,9 @@ const buildMarkdownReport = (report: Report, narrative?: string) => {
 	lines.push("## Viewing Historical Reports");
 	lines.push("Reports are saved under .pi/reports so you can compare readiness over time.");
 	lines.push("");
+	lines.push("## AI Prompt (Repo Snapshot)");
+	lines.push(report.aiPrompt ?? "No AI prompt generated.");
+	lines.push("");
 	lines.push("## Remediation (Coming Soon)");
 	lines.push("Future versions will offer automated fixes for failing criteria.");
 	lines.push("");
@@ -2395,6 +2484,14 @@ const buildReport = async (pi: ExtensionAPI, ctx: ExtensionCommandContext, args:
 	const workflows = getWorkflowFiles(repoRoot);
 	const readme = readText(path.join(repoRoot, "README.md"));
 
+	setStatus("Building repo snapshot for AI review...");
+	const repoSnapshot = buildRepoSnapshot(repoRoot);
+	setProgress([
+		`Languages: ${languages.length ? languages.join(", ") : "Unknown"}`,
+		`Apps discovered: ${apps.length}`,
+		`Snapshot size: ${repoSnapshot.length.toLocaleString()} chars`,
+	]);
+
 	const repoContext: RepoContext = {
 		root: repoRoot,
 		repoName,
@@ -2442,8 +2539,12 @@ const buildReport = async (pi: ExtensionAPI, ctx: ExtensionCommandContext, args:
 		paths: { html: htmlPath, json: jsonPath, md: mdPath },
 	};
 
+	setStatus("Preparing AI prompt...");
+	const prompt = buildNarrativePrompt(report, repoSnapshot);
+	report.aiPrompt = prompt;
+
 	setStatus("Running AI review... (if model available)");
-	const narrativeResult = await generateNarrative(report, ctx, args);
+	const narrativeResult = await generateNarrative(prompt, ctx, args);
 	if (narrativeResult?.model) {
 		report.model = narrativeResult.model;
 	}
