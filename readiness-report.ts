@@ -2438,6 +2438,9 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.model) {
 			lastSelectedModel = { provider: ctx.model.provider, id: ctx.model.id };
 		}
+		if (ctx.hasUI) {
+			ctx.ui.setStatus("readiness-report", "Extension loaded");
+		}
 	});
 
 	pi.on("model_select", async (event) => {
