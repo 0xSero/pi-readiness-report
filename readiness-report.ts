@@ -504,17 +504,6 @@ const hasReleaseNotesAutomation = (root: string) =>
 
 const hasUnusedDependenciesDetection = (apps: AppInfo[]) => hasAnyDependencyAcrossApps(apps, ["depcheck", "knip"]);
 
-const hasReleaseAutomation = (repoRoot: string) => {
-	return (
-		fileExists(path.join(repoRoot, ".changeset")) ||
-		hasAnyFile(repoRoot, [".releaserc", ".releaserc.json", "release.config.js", "changeset.config.js"]) ||
-		(() => {
-			const pkg = readJson(path.join(repoRoot, "package.json"));
-			return Boolean(pkg && (pkg["release"] || pkg["changeset"] || pkg["semantic-release"]));
-		})()
-	);
-};
-
 const hasFastCiFeedback = (workflows: string[]) => hasWorkflowMatch(workflows, /(cache|matrix|parallel)/i);
 const hasBuildPerfTracking = (workflows: string[]) => hasWorkflowMatch(workflows, /(build performance|perf|timing)/i);
 const hasProgressiveRollout = (workflows: string[]) => hasWorkflowMatch(workflows, /(canary|progressive|rollout)/i);
