@@ -2172,8 +2172,12 @@ const generateNarrative = async (report: Report, ctx: ExtensionCommandContext, a
 	if (!apiKey) return undefined;
 
 	if (ctx.hasUI) {
-		ctx.ui.setStatus("readiness-report", `Running ${modelRef.provider}/${modelRef.id} for narrative...`);
-		ctx.ui.notify(`Readiness narrative: ${modelRef.provider}/${modelRef.id}`, "info");
+		ctx.ui.setStatus("readiness-report", `AI review in progress (${modelRef.provider}/${modelRef.id})...`);
+		ctx.ui.notify(`AI review: ${modelRef.provider}/${modelRef.id}`, "info");
+		ctx.ui.setWidget("readiness-report-progress", [
+			"AI review: running",
+			`Model: ${modelRef.provider}/${modelRef.id}`,
+		]);
 	}
 
 	const messages = [
@@ -2192,7 +2196,7 @@ const generateNarrative = async (report: Report, ctx: ExtensionCommandContext, a
 		.trim();
 
 	if (ctx.hasUI) {
-		ctx.ui.setStatus("readiness-report", "Narrative generated");
+		ctx.ui.setStatus("readiness-report", "AI review completed");
 	}
 
 	if (!narrative) return undefined;
@@ -2359,10 +2363,34 @@ const formatReportText = (report: Report) => {
 };
 
 const buildReport = async (pi: ExtensionAPI, ctx: ExtensionCommandContext, args: string): Promise<Report> => {
+	const setStatus = (message: string) => {
+		if (ctx.hasUI) {
+			ctx.ui.setStatus("readiness-report", message);
+		}
+	};
+
+	const setProgress = (lines: string[]) => {
+		if (ctx.hasUI) {
+			ctx.ui.setWidget("readiness-report-progress", lines);
+		}
+	};
+
+	setStatus("Resolving repository root...");
 	const repoRoot = await getRepoRoot(pi, ctx);
 	const repoName = path.basename(repoRoot);
+
+	setStatus("Detecting languages...");
 	const languages = detectLanguages(repoRoot);
+	setProgress([`Languages: ${languages.length ? languages.join(", ") : "Unknown"}`]);
+
+	setStatus("Discovering applications...");
 	const apps = discoverApps(repoRoot);
+	setProgress([
+		`Languages: ${languages.length ? languages.join(", ") : "Unknown"}`,
+		`Apps discovered: ${apps.length}`,
+	]);
+
+	setStatus("Scanning repository files...");
 	const files = getRepoFiles(repoRoot);
 	const workflows = getWorkflowFiles(repoRoot);
 	const readme = readText(path.join(repoRoot, "README.md"));
@@ -2377,10 +2405,16 @@ const buildReport = async (pi: ExtensionAPI, ctx: ExtensionCommandContext, args:
 		readme,
 	};
 
+	setStatus("Evaluating criteria...");
 	const criteria = buildCriteria();
 	const results = evaluateCriteria(criteria, repoContext);
 	const maturity = computeMaturity(results);
 	const actionItems = buildActionItems(results);
+	setProgress([
+		`Languages: ${languages.length ? languages.join(", ") : "Unknown"}`,
+		`Apps discovered: ${apps.length}`,
+		`Criteria evaluated: ${results.length}`,
+	]);
 
 	const generatedAt = new Date().toISOString();
 	const timestamp = generatedAt.replace(/[:.]/g, "-");
@@ -2408,11 +2442,13 @@ const buildReport = async (pi: ExtensionAPI, ctx: ExtensionCommandContext, args:
 		paths: { html: htmlPath, json: jsonPath, md: mdPath },
 	};
 
+	setStatus("Running AI review... (if model available)");
 	const narrativeResult = await generateNarrative(report, ctx, args);
 	if (narrativeResult?.model) {
 		report.model = narrativeResult.model;
 	}
 
+	setStatus("Rendering reports...");
 	const html = renderHtml(report);
 	const markdown = buildMarkdownReport(report, narrativeResult?.narrative);
 	fs.writeFileSync(htmlPath, html, "utf8");
