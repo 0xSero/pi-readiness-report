@@ -2233,7 +2233,7 @@ const renderHtml = (report: Report) => {
 			<h2>Remediation (Coming Soon)</h2>
 			<p class="note">Future versions will offer automated fixes for failing criteria directly from the command.</p>
 		</div>
-		<footer>Sybil Solutions</footer>
+		<footer>Sybil Solutions · ${report.model ? `Model ${report.model.provider}/${report.model.id}` : "Model not recorded"}</footer>
 	</div>
 </body>
 </html>`;
@@ -2257,7 +2257,7 @@ const buildNarrativePrompt = (report: Report, repoSnapshot: string) => {
 
 	return [
 		"You are reviewing a software repository for readiness.",
-		"Respond in Markdown with sections: Executive Summary, Strengths, Gaps, Next Actions.",
+		"Respond now in Markdown with sections: Executive Summary, Strengths, Gaps, Next Actions.",
 		"Use only the data provided. Do not invent tooling or files.",
 		"Do not call tools. Provide the narrative only.",
 		"Repository snapshot:",
@@ -2292,7 +2292,10 @@ const generateNarrative = async (pi: ExtensionAPI, prompt: string, ctx: Extensio
 	const narrative = lastMessage ? extractTextParts(lastMessage.content).join("\n").trim() : undefined;
 
 	if (ctx.hasUI) {
-		ctx.ui.setStatus("readiness-report", "AI review completed");
+		ctx.ui.setStatus("readiness-report", narrative ? "AI review completed" : "AI review missing response");
+		if (!narrative) {
+			ctx.ui.notify("No AI response captured for readiness review", "warning");
+		}
 	}
 
 	if (!narrative) return undefined;
@@ -2561,7 +2564,13 @@ const buildReport = async (pi: ExtensionAPI, ctx: ExtensionCommandContext, args:
 			if (switched && ctx.hasUI) {
 				ctx.ui.notify(`Model set to ${modelRef.provider}/${modelRef.id}`, "info");
 			}
+			if (switched) {
+				report.model = { provider: modelRef.provider, id: modelRef.id };
+			}
 		}
+	}
+	if (!report.model && ctx.model) {
+		report.model = { provider: ctx.model.provider, id: ctx.model.id };
 	}
 
 	setStatus("Running AI review... (agent response)");
