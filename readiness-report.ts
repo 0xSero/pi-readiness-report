@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import { complete } from "@mariozechner/pi-ai";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -2058,6 +2059,26 @@ const renderHtml = (report: Report) => {
 		})
 		.join("");
 
+	const checklistRows = report.criteria
+		.map((item) => {
+			const status = item.applicable ? (item.passed ? "Completed" : "Needs Work") : "N/A";
+			const statusClass = item.applicable ? (item.passed ? "ok" : "warn") : "na";
+			return `<tr>
+				<td>${item.category}</td>
+				<td><span class="badge-pill">${item.tier}</span></td>
+				<td>${item.title}</td>
+				<td class="${statusClass}"><span class="badge-pill">${status}</span></td>
+				<td>${item.recommendation}</td>
+			</tr>`;
+		})
+		.join("");
+
+	const references = [
+		{ label: "Factory Readiness Report", href: "https://docs.factory.ai/cli/features/readiness-report" },
+		{ label: "Readiness Reports API", href: "https://docs.factory.ai/reference/readiness-reports-api" },
+		{ label: "Agent Readiness Dashboard", href: "https://docs.factory.ai/web/agent-readiness/dashboard" },
+	];
+
 	const levelRows = report.maturity.levelScores
 		.map((level) => {
 			const percent = Math.round(level.passRate * 100);
@@ -2129,6 +2150,7 @@ const renderHtml = (report: Report) => {
 			}
 		}
 		* { box-sizing: border-box; }
+		html, body { height: 100%; }
 		body {
 			font-family: "Geist", system-ui, sans-serif;
 			margin: 0;
@@ -2145,12 +2167,18 @@ const renderHtml = (report: Report) => {
 		a:hover { text-decoration: underline; }
 		details { margin-bottom: 12px; border: 1px solid var(--border); border-radius: 0.5rem; padding: 12px; background: var(--surface-2); }
 		summary { cursor: pointer; font-weight: 600; }
-		.container { max-width: 1100px; margin: 0 auto; padding: 32px; }
+		.container { max-width: 1200px; margin: 0 auto; padding: 24px; height: 100%; }
+		.page { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; height: calc(100vh - 120px); }
+		.column { overflow: auto; padding-right: 4px; }
+		@media (max-width: 1100px) {
+			.page { grid-template-columns: 1fr; height: auto; }
+			.column { max-height: none; }
+		}
 		.card {
 			background: var(--surface);
-			padding: 24px;
+			padding: 20px;
 			border-radius: 0.5rem;
-			margin-bottom: 24px;
+			margin-bottom: 16px;
 			border: 1px solid var(--border);
 			box-shadow: 0 1px 2px rgba(0,0,0,0.08);
 			animation: slide-up 0.3s ease;
@@ -2169,7 +2197,7 @@ const renderHtml = (report: Report) => {
 		.badge-pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); font-size: 12px; }
 		ul { margin: 0; padding-left: 20px; }
 		.note { color: var(--muted); font-size: 0.95rem; }
-		footer { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 24px 0; }
+		footer { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 16px 0; }
 		::-webkit-scrollbar { height: 10px; width: 10px; }
 		::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
 		::-webkit-scrollbar-track { background: transparent; }
@@ -2180,113 +2208,139 @@ const renderHtml = (report: Report) => {
 </head>
 <body>
 	<div class="container">
-		<div class="card">
-			<span class="badge">Readiness Report</span>
-			<h1>${report.repoName}</h1>
-			<p>Generated ${report.generatedAt}${report.model ? ` • Model ${report.model.provider}/${report.model.id}` : ""}</p>
-			<div class="grid">
-				<div>
-					<h3>Level Achieved</h3>
-					<p><strong>${report.maturity.levelAchieved} - ${levelLabels[report.maturity.levelAchieved]}</strong></p>
+		<div class="page">
+			<div class="column">
+				<div class="card">
+					<span class="badge">Readiness Report</span>
+					<h1>${report.repoName}</h1>
+					<p>Generated ${report.generatedAt}${report.model ? ` • Model ${report.model.provider}/${report.model.id}` : ""}</p>
+					<div class="grid">
+						<div>
+							<h3>Level Achieved</h3>
+							<p><strong>${report.maturity.levelAchieved} - ${levelLabels[report.maturity.levelAchieved]}</strong></p>
+						</div>
+						<div>
+							<h3>Score</h3>
+							<p><strong>${report.maturity.score}%</strong> (${report.maturity.checksPassed}/${report.maturity.checksTotal} checks)</p>
+							<div class="progress"><span></span></div>
+						</div>
+						<div>
+							<h3>Apps</h3>
+							<p>${report.apps.length}</p>
+						</div>
+						<div>
+							<h3>Languages</h3>
+							<p>${report.languages.length ? report.languages.join(", ") : "Unknown"}</p>
+						</div>
+					</div>
 				</div>
-				<div>
-					<h3>Score</h3>
-					<p><strong>${report.maturity.score}%</strong> (${report.maturity.checksPassed}/${report.maturity.checksTotal} checks)</p>
-					<div class="progress"><span></span></div>
+				<div class="card">
+					<h2>Understanding the Output</h2>
+					<p class="note">Scores are reported as numerator/denominator where numerator is apps passing and denominator is apps evaluated. The report includes Level Achieved, Applications Discovered, Criteria Results, and Action Items.</p>
 				</div>
-				<div>
-					<h3>Apps</h3>
-					<p>${report.apps.length}</p>
+				<div class="card">
+					<h2>Action Items</h2>
+					<ul>${actionsList || "<li>All criteria passed. Keep it up!</li>"}</ul>
 				</div>
-				<div>
-					<h3>Languages</h3>
-					<p>${report.languages.length ? report.languages.join(", ") : "Unknown"}</p>
+				<div class="card">
+					<h2>Applications Discovered</h2>
+					<ul>${appsList || "<li>No applications detected</li>"}</ul>
+				</div>
+				<div class="card">
+					<h2>Level Analytics</h2>
+					<table>
+						<thead>
+							<tr><th>Level</th><th>Criteria Passed</th><th>Pass Rate</th></tr>
+						</thead>
+						<tbody>${levelRows}</tbody>
+					</table>
+				</div>
+				<div class="card">
+					<h2>Pass Rate by Category</h2>
+					${categoryChart}
+					<table>
+						<thead>
+							<tr><th>Category</th><th>Passed</th><th>Pass Rate</th></tr>
+						</thead>
+						<tbody>${categoryRows}</tbody>
+					</table>
+				</div>
+				<div class="card">
+					<h2>Level Over Time</h2>
+					${levelChart || "<p class=\"note\">No historical reports yet.</p>"}
 				</div>
 			</div>
-		</div>
-		<div class="card">
-			<h2>Understanding the Output</h2>
-			<p class="note">Scores are reported as numerator/denominator where numerator is apps passing and denominator is apps evaluated. The report includes Level Achieved, Applications Discovered, Criteria Results, and Action Items.</p>
-		</div>
-		<div class="card">
-			<h2>Action Items</h2>
-			<ul>${actionsList || "<li>All criteria passed. Keep it up!</li>"}</ul>
-		</div>
-		<div class="card">
-			<h2>Applications Discovered</h2>
-			<ul>${appsList || "<li>No applications detected</li>"}</ul>
-		</div>
-		<div class="card">
-			<h2>Level Analytics</h2>
-			<table>
-				<thead>
-					<tr><th>Level</th><th>Criteria Passed</th><th>Pass Rate</th></tr>
-				</thead>
-				<tbody>${levelRows}</tbody>
-			</table>
-		</div>
-		<div class="card">
-			<h2>Pass Rate by Category</h2>
-			${categoryChart}
-			<table>
-				<thead>
-					<tr><th>Category</th><th>Passed</th><th>Pass Rate</th></tr>
-				</thead>
-				<tbody>${categoryRows}</tbody>
-			</table>
-		</div>
-		<div class="card">
-			<h2>AI Prompt (Repo Snapshot)</h2>
-			<p class="note">This is the exact prompt sent to the model.</p>
-			<pre>${report.aiPrompt ? report.aiPrompt.replace(/</g, "&lt;") : "No AI prompt generated."}</pre>
-		</div>
-		<div class="card">
-			<h2>Level Over Time</h2>
-			${levelChart || "<p class=\"note\">No historical reports yet.</p>"}
-		</div>
-		<div class="card">
-			<h2>Criteria Results</h2>
-			<p class="note">Expand each category to review the detailed checks.</p>
-			${report.categories
-				.map((category) => {
-					const items = report.criteria.filter((item) => item.category === category.name);
-					const rows = items
-						.map((item) => {
-							const status = item.applicable ? (item.passed ? "Passed" : "Needs Work") : "N/A";
-							const statusClass = item.applicable ? (item.passed ? "ok" : "warn") : "na";
-							const reasons = item.reasons
-								.map((reason) => `<li><strong>${reason.target}</strong>: ${reason.details}</li>`)
+			<div class="column">
+					<div class="card">
+					<h2>Criteria Results</h2>
+					<p class="note">Expand each category to review the detailed checks.</p>
+					${report.categories
+						.map((category) => {
+							const items = report.criteria.filter((item) => item.category === category.name);
+							const rows = items
+								.map((item) => {
+									const status = item.applicable ? (item.passed ? "Passed" : "Needs Work") : "N/A";
+									const statusClass = item.applicable ? (item.passed ? "ok" : "warn") : "na";
+									const reasons = item.reasons
+										.map((reason) => `<li><strong>${reason.target}</strong>: ${reason.details}</li>`)
+										.join("");
+									return `<tr>
+										<td><span class=\"badge-pill\">${item.tier}</span></td>
+										<td>${item.title}</td>
+										<td>${formatScore(item.numerator, item.denominator)}</td>
+										<td class=\"${statusClass}\"><span class=\"badge-pill\">${status}</span></td>
+										<td><ul>${reasons}</ul></td>
+									</tr>`;
+								})
 								.join("");
-							return `<tr>
-								<td><span class=\"badge-pill\">${item.tier}</span></td>
-								<td>${item.title}</td>
-								<td>${formatScore(item.numerator, item.denominator)}</td>
-								<td class=\"${statusClass}\"><span class=\"badge-pill\">${status}</span></td>
-								<td><ul>${reasons}</ul></td>
-							</tr>`;
+							const percent = category.passRate === null ? "N/A" : `${Math.round(category.passRate * 100)}%`;
+							return `
+								<details>
+									<summary><strong>${category.name}</strong> — ${category.passed}/${category.total} (${percent})</summary>
+									<table>
+										<thead>
+											<tr><th>Tier</th><th>Criterion</th><th>Score</th><th>Status</th><th>Details</th></tr>
+										</thead>
+										<tbody>${rows}</tbody>
+									</table>
+								</details>`;
 						})
-						.join("");
-					const percent = category.passRate === null ? "N/A" : `${Math.round(category.passRate * 100)}%`;
-					return `
-						<details>
-							<summary><strong>${category.name}</strong> — ${category.passed}/${category.total} (${percent})</summary>
-							<table>
-								<thead>
-									<tr><th>Tier</th><th>Criterion</th><th>Score</th><th>Status</th><th>Details</th></tr>
-								</thead>
-								<tbody>${rows}</tbody>
-							</table>
-						</details>`;
-				})
-				.join("")}
-		</div>
-		<div class="card">
-			<h2>Viewing Historical Reports</h2>
-			<p class="note">Reports are saved to <code>.pi/reports</code>. You can track readiness over time by comparing generated files.</p>
-		</div>
-		<div class="card">
-			<h2>Remediation (Coming Soon)</h2>
-			<p class="note">Future versions will offer automated fixes for failing criteria directly from the command.</p>
+						.join("")}
+				</div>
+				<div class="card">
+					<h2>Completion Advice</h2>
+					<p class="note">Focus on the highest-impact items to reach the next level.</p>
+					<ul>${actionsList || "<li>All criteria passed. Keep it up!</li>"}</ul>
+				</div>
+				<div class="card">
+					<h2>Full Checklist</h2>
+					<table>
+						<thead>
+							<tr><th>Category</th><th>Tier</th><th>Criterion</th><th>Status</th><th>Recommendation</th></tr>
+						</thead>
+						<tbody>${checklistRows}</tbody>
+					</table>
+				</div>
+				<div class="card">
+					<h2>References</h2>
+					<ul>
+						${references.map((ref) => `<li><a href=\"${ref.href}\" target=\"_blank\" rel=\"noreferrer\">${ref.label}</a></li>`).join("")}
+					</ul>
+				</div>
+				<div class="card">
+					<h2>AI Prompt (Repo Snapshot)</h2>
+					<p class="note">This is the exact prompt sent to the model.</p>
+					<pre>${report.aiPrompt ? report.aiPrompt.replace(/</g, "&lt;") : "No AI prompt generated."}</pre>
+				</div>
+				<div class="card">
+					<h2>Viewing Historical Reports</h2>
+					<p class="note">Reports are saved to <code>.pi/reports</code>. You can track readiness over time by comparing generated files.</p>
+				</div>
+				<div class="card">
+					<h2>Remediation (Coming Soon)</h2>
+					<p class="note">Future versions will offer automated fixes for failing criteria directly from the command.</p>
+				</div>
+			</div>
 		</div>
 		<footer>Sybil Solutions · ${report.model ? `Model ${report.model.provider}/${report.model.id}` : "Model not recorded"}</footer>
 	</div>
@@ -2352,16 +2406,74 @@ const parseModelReview = (text: string): ModelReviewResponse | undefined => {
 	}
 };
 
-const requestModelReview = async (pi: ExtensionAPI, prompt: string, ctx: ExtensionCommandContext) => {
+const runModelScoring = async (prompt: string, ctx: ExtensionCommandContext, modelRef?: ModelRef) => {
+	const modelChoice = modelRef ? ctx.modelRegistry.find(modelRef.provider, modelRef.id) : ctx.model;
+	if (!modelChoice) return undefined;
+	const apiKey = await ctx.modelRegistry.getApiKey(modelChoice);
+	if (!apiKey) return undefined;
+
+	if (ctx.hasUI) {
+		ctx.ui.setStatus(
+			"readiness-report",
+			`AI scoring in progress (${modelChoice.provider}/${modelChoice.id})...`,
+		);
+		ctx.ui.setWidget("readiness-report-progress", [
+			"AI scoring: running",
+			`Model: ${modelChoice.provider}/${modelChoice.id}`,
+			`Prompt size: ${prompt.length.toLocaleString()} chars`,
+		]);
+	}
+
+	const messages = [
+		{
+			role: "user" as const,
+			content: [{ type: "text" as const, text: prompt }],
+			timestamp: Date.now(),
+		},
+	];
+
+	const response = await complete(modelChoice, { messages }, { apiKey, reasoningEffort: "medium" });
+	const responseText = response.content
+		.filter((item): item is { type: "text"; text: string } => item.type === "text")
+		.map((item) => item.text)
+		.join("\n")
+		.trim();
+
+	const parsed = responseText ? parseModelReview(responseText) : undefined;
+	if (!parsed && ctx.hasUI) {
+		ctx.ui.setStatus("readiness-report", "AI scoring response invalid");
+		ctx.ui.notify("AI scoring was not valid JSON", "warning");
+	}
+
+	return parsed ? { parsed, raw: responseText, model: modelChoice } : undefined;
+};
+
+const buildNarrativePrompt = (report: Report, modelReview: ModelReviewResponse) => {
+	const summary = {
+		repo: report.repoName,
+		levelAchieved: modelReview.levelAchieved ?? report.maturity.levelAchieved,
+		score: modelReview.score ?? report.maturity.score,
+		actionItems: modelReview.actionItems ?? report.actionItems,
+		criteria: modelReview.criteria,
+	};
+
+	return [
+		"Summarize the readiness review into Markdown with sections: Executive Summary, Strengths, Gaps, Next Actions.",
+		"Do not output JSON.",
+		JSON.stringify(summary, null, 2),
+	].join("\n");
+};
+
+const requestNarrative = async (pi: ExtensionAPI, prompt: string, ctx: ExtensionCommandContext) => {
 	if (!ctx.isIdle()) {
 		await ctx.waitForIdle();
 	}
 	const beforeCount = ctx.sessionManager.getEntries().length;
 
 	if (ctx.hasUI) {
-		ctx.ui.setStatus("readiness-report", "AI review in progress (agent response)...");
+		ctx.ui.setStatus("readiness-report", "AI narrative in progress (agent response)...");
 		ctx.ui.setWidget("readiness-report-progress", [
-			"AI review: awaiting agent response",
+			"AI narrative: awaiting agent response",
 			`Prompt size: ${prompt.length.toLocaleString()} chars`,
 		]);
 	}
@@ -2374,23 +2486,16 @@ const requestModelReview = async (pi: ExtensionAPI, prompt: string, ctx: Extensi
 		(entry) => entry.type === "message" && entry.message?.role === "assistant",
 	);
 	const lastMessage = assistantMessages.at(-1)?.message;
-	const responseText = lastMessage ? extractTextParts(lastMessage.content).join("\n").trim() : undefined;
+	const narrative = lastMessage ? extractTextParts(lastMessage.content).join("\n").trim() : undefined;
 
-	if (!responseText) {
-		if (ctx.hasUI) {
-			ctx.ui.setStatus("readiness-report", "AI review missing response");
-			ctx.ui.notify("No AI response captured for readiness review", "warning");
+	if (ctx.hasUI) {
+		ctx.ui.setStatus("readiness-report", narrative ? "AI narrative completed" : "AI narrative missing response");
+		if (!narrative) {
+			ctx.ui.notify("No AI narrative captured", "warning");
 		}
-		return undefined;
 	}
 
-	const parsed = parseModelReview(responseText);
-	if (!parsed && ctx.hasUI) {
-		ctx.ui.setStatus("readiness-report", "AI review response invalid");
-		ctx.ui.notify("AI response was not valid JSON", "warning");
-	}
-
-	return parsed ? { parsed, raw: responseText } : undefined;
+	return narrative;
 };
 
 const buildMarkdownReport = (report: Report, narrative?: string) => {
@@ -2482,6 +2587,28 @@ const buildMarkdownReport = (report: Report, narrative?: string) => {
 		lines.push(`| ${item.category} | ${item.tier} | ${item.title} | ${formatScore(item.numerator, item.denominator)} | ${status} |`);
 	}
 	lines.push("");
+	lines.push("## Completion Advice");
+	if (report.actionItems.length === 0) {
+		lines.push("- All criteria passed.");
+	} else {
+		for (const item of report.actionItems) {
+			lines.push(`- **Level ${item.level}** — ${item.title}: ${item.recommendation}`);
+		}
+	}
+	lines.push("");
+	lines.push("## Full Checklist");
+	lines.push("| Category | Tier | Criterion | Status | Recommendation |");
+	lines.push("| --- | --- | --- | --- | --- |");
+	for (const item of report.criteria) {
+		const status = item.applicable ? (item.passed ? "Completed" : "Needs Work") : "N/A";
+		lines.push(`| ${item.category} | ${item.tier} | ${item.title} | ${status} | ${item.recommendation} |`);
+	}
+	lines.push("");
+	lines.push("## References");
+	lines.push("- https://docs.factory.ai/cli/features/readiness-report");
+	lines.push("- https://docs.factory.ai/reference/readiness-reports-api");
+	lines.push("- https://docs.factory.ai/web/agent-readiness/dashboard");
+	lines.push("");
 	lines.push("## Viewing Historical Reports");
 	lines.push("Reports are saved under .pi/reports so you can compare readiness over time.");
 	lines.push("");
@@ -2538,7 +2665,7 @@ const formatReportText = (report: Report) => {
 		}
 	}
 	lines.push("");
-	lines.push("Action Items:");
+	lines.push("Completion Advice:");
 	for (const item of report.actionItems) {
 		lines.push(`- [L${item.level}] ${item.title}: ${item.recommendation}`);
 	}
@@ -2662,19 +2789,18 @@ const buildReport = async (pi: ExtensionAPI, ctx: ExtensionCommandContext, args:
 		report.model = { provider: ctx.model.provider, id: ctx.model.id };
 	}
 
-	setStatus("Running AI review... (agent response)");
+	setStatus("Running AI scoring... (model JSON)");
 	setProgress([
 		`Languages: ${languages.length ? languages.join(", ") : "Unknown"}`,
 		`Apps discovered: ${apps.length}`,
-		`AI review: prompt sent (${prompt.length.toLocaleString()} chars)`,
+		`AI scoring: prompt sent (${prompt.length.toLocaleString()} chars)`,
 	]);
-	const modelReview = await requestModelReview(pi, prompt, ctx);
-	if (ctx.model) {
-		report.model = { provider: ctx.model.provider, id: ctx.model.id };
-	}
-
+	const modelReview = await runModelScoring(prompt, ctx, modelRef);
 	if (!modelReview) {
-		throw new Error("AI review did not return valid JSON. Please retry.");
+		throw new Error("AI scoring did not return valid JSON. Please retry.");
+	}
+	if (modelReview.model) {
+		report.model = { provider: modelReview.model.provider, id: modelReview.model.id };
 	}
 
 	results = mapModelScores(criteria, report, modelReview.parsed);
@@ -2692,9 +2818,12 @@ const buildReport = async (pi: ExtensionAPI, ctx: ExtensionCommandContext, args:
 	report.history = loadHistory(repoRoot);
 	report.history.push({ generatedAt, level: report.maturity.levelAchieved, score: report.maturity.score });
 
+	const narrativePrompt = buildNarrativePrompt(report, modelReview.parsed);
+	const narrative = await requestNarrative(pi, narrativePrompt, ctx);
+
 	setStatus("Rendering reports...");
 	const html = renderHtml(report);
-	const markdown = buildMarkdownReport(report, modelReview.parsed.narrativeMarkdown ?? modelReview.raw);
+	const markdown = buildMarkdownReport(report, narrative ?? modelReview.parsed.narrativeMarkdown ?? modelReview.raw);
 	fs.writeFileSync(htmlPath, html, "utf8");
 	fs.writeFileSync(mdPath, markdown, "utf8");
 	fs.writeFileSync(jsonPath, JSON.stringify(report, null, 2), "utf8");
