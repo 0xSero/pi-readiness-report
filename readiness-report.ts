@@ -97,6 +97,22 @@ type ContentBlock = {
 	text?: string;
 };
 
+type ModelCriterionScore = {
+	id: string;
+	status: CheckStatus;
+	numerator?: number;
+	denominator?: number;
+	details?: string;
+};
+
+type ModelReviewResponse = {
+	criteria: ModelCriterionScore[];
+	actionItems?: { title: string; recommendation: string; level: number }[];
+	levelAchieved?: number;
+	score?: number;
+	narrativeMarkdown?: string;
+};
+
 let lastSelectedModel: ModelRef | undefined;
 
 const parseModelArg = (args: string) => {
@@ -457,7 +473,13 @@ const hasMatchingFile = (dir: string, matcher: RegExp) => walkFiles(dir).some((f
 
 const formatScore = (numerator: number, denominator: number) => (denominator === 0 ? "N/A" : `${numerator}/${denominator}`);
 
-const buildRepoSnapshot = (repoRoot: string, maxFiles = 2000, maxLargestFiles = 8, maxChars = 4000) => {
+const buildRepoSnapshot = (
+	repoRoot: string,
+	maxFiles = 800,
+	maxLargestFiles = 6,
+	maxChars = 1500,
+	maxTotalChars = 60000,
+) => {
 	const files = walkFilesAll(repoRoot).slice(0, maxFiles);
 	const tree = files.map((file) => path.relative(repoRoot, file)).sort();
 	const largest = files
@@ -481,13 +503,19 @@ const buildRepoSnapshot = (repoRoot: string, maxFiles = 2000, maxLargestFiles = 
 			};
 		});
 
-	return [
+	let snapshot = [
 		"FILE TREE (truncated if huge):",
 		...tree,
 		"",
 		"LARGEST FILES (truncated snippets):",
 		...largest.map((entry) => `# ${entry.path} (${entry.size} bytes)\n${entry.snippet}`),
 	].join("\n");
+
+	if (snapshot.length > maxTotalChars) {
+		snapshot = `${snapshot.slice(0, maxTotalChars)}\n\n[TRUNCATED]`;
+	}
+
+	return snapshot;
 };
 
 const hasCodeFormatter = (root: string, app: AppInfo) =>
@@ -1886,6 +1914,33 @@ const buildActionItems = (criteria: CriterionResult[]) => {
 		}));
 };
 
+const mapModelScores = (criteria: Criterion[], report: Report, response: ModelReviewResponse) => {
+	const scoreMap = new Map(response.criteria.map((item) => [item.id, item]));
+	return criteria.map((criterion) => {
+		const score = scoreMap.get(criterion.id);
+		const status = score?.status ?? "na";
+		const numerator = typeof score?.numerator === "number" ? score.numerator : status === "pass" ? 1 : 0;
+		const denominator = typeof score?.denominator === "number" ? score.denominator : status === "na" ? 0 : 1;
+		const details = score?.details ?? "Model score";
+		const applicable = status !== "na" && denominator > 0;
+		return {
+			id: criterion.id,
+			category: criterion.category,
+			tier: criterion.tier,
+			level: criterion.level,
+			title: criterion.title,
+			description: criterion.description,
+			recommendation: criterion.recommendation,
+			scope: criterion.scope,
+			numerator,
+			denominator,
+			passed: status === "pass",
+			applicable,
+			reasons: [{ target: report.repoName, status, details }],
+		} satisfies CriterionResult;
+	});
+};
+
 const computeCategoryStats = (criteria: CriterionResult[]) => {
 	const stats = new Map<string, { passed: number; total: number }>();
 	for (const item of criteria) {
@@ -2239,35 +2294,65 @@ const renderHtml = (report: Report) => {
 </html>`;
 };
 
-const buildNarrativePrompt = (report: Report, repoSnapshot: string) => {
-	const summary = {
-		repo: report.repoName,
-		level: report.maturity.levelAchieved,
-		score: report.maturity.score,
-		apps: report.apps.map((app) => ({ path: app.relativePath, type: app.type, description: app.description })),
-		actionItems: report.actionItems,
-		criteria: report.criteria.map((item) => ({
-			category: item.category,
-			tier: item.tier,
-			title: item.title,
-			score: `${item.numerator}/${item.denominator}`,
-			status: item.applicable ? (item.passed ? "passed" : "needs work") : "n/a",
-		})),
-	};
+const buildModelReviewPrompt = (criteria: Criterion[], report: Report, repoSnapshot: string) => {
+	const criteriaList = criteria.map((item) => ({
+		id: item.id,
+		category: item.category,
+		tier: item.tier,
+		title: item.title,
+		description: item.description,
+	}));
+
+	const apps = report.apps.map((app) => ({ path: app.relativePath, type: app.type, description: app.description }));
 
 	return [
 		"You are reviewing a software repository for readiness.",
-		"Respond now in Markdown with sections: Executive Summary, Strengths, Gaps, Next Actions.",
-		"Use only the data provided. Do not invent tooling or files.",
-		"Do not call tools. Provide the narrative only.",
+		"Return ONLY valid JSON following this shape:",
+		"{",
+		"  \"criteria\": [{\"id\": string, \"status\": \"pass\"|\"fail\"|\"na\", \"numerator\": number, \"denominator\": number, \"details\": string}],",
+		"  \"actionItems\": [{\"title\": string, \"recommendation\": string, \"level\": number}],",
+		"  \"levelAchieved\": number,",
+		"  \"score\": number,",
+		"  \"narrativeMarkdown\": string",
+		"}",
+		"Rules:",
+		"- Use only data provided.",
+		"- For NA, set denominator=0, numerator=0.",
+		"- For repo-level checks, denominator should be 1.",
+		"- narrativeMarkdown must include sections: Executive Summary, Strengths, Gaps, Next Actions.",
 		"Repository snapshot:",
 		repoSnapshot,
-		"Structured metrics:",
-		JSON.stringify(summary, null, 2),
+		"Applications:",
+		JSON.stringify(apps, null, 2),
+		"Criteria to score:",
+		JSON.stringify(criteriaList, null, 2),
 	].join("\n");
 };
 
-const generateNarrative = async (pi: ExtensionAPI, prompt: string, ctx: ExtensionCommandContext) => {
+const extractJsonFromText = (text: string) => {
+	const fenced = text.match(/```json\s*([\s\S]*?)\s*```/i);
+	if (fenced && fenced[1]) return fenced[1];
+	const firstBrace = text.indexOf("{");
+	const lastBrace = text.lastIndexOf("}");
+	if (firstBrace >= 0 && lastBrace > firstBrace) {
+		return text.slice(firstBrace, lastBrace + 1);
+	}
+	return undefined;
+};
+
+const parseModelReview = (text: string): ModelReviewResponse | undefined => {
+	try {
+		const jsonText = extractJsonFromText(text);
+		if (!jsonText) return undefined;
+		const parsed = JSON.parse(jsonText) as ModelReviewResponse;
+		if (!parsed || !Array.isArray(parsed.criteria)) return undefined;
+		return parsed;
+	} catch {
+		return undefined;
+	}
+};
+
+const requestModelReview = async (pi: ExtensionAPI, prompt: string, ctx: ExtensionCommandContext) => {
 	if (!ctx.isIdle()) {
 		await ctx.waitForIdle();
 	}
@@ -2289,17 +2374,23 @@ const generateNarrative = async (pi: ExtensionAPI, prompt: string, ctx: Extensio
 		(entry) => entry.type === "message" && entry.message?.role === "assistant",
 	);
 	const lastMessage = assistantMessages.at(-1)?.message;
-	const narrative = lastMessage ? extractTextParts(lastMessage.content).join("\n").trim() : undefined;
+	const responseText = lastMessage ? extractTextParts(lastMessage.content).join("\n").trim() : undefined;
 
-	if (ctx.hasUI) {
-		ctx.ui.setStatus("readiness-report", narrative ? "AI review completed" : "AI review missing response");
-		if (!narrative) {
+	if (!responseText) {
+		if (ctx.hasUI) {
+			ctx.ui.setStatus("readiness-report", "AI review missing response");
 			ctx.ui.notify("No AI response captured for readiness review", "warning");
 		}
+		return undefined;
 	}
 
-	if (!narrative) return undefined;
-	return { narrative };
+	const parsed = parseModelReview(responseText);
+	if (!parsed && ctx.hasUI) {
+		ctx.ui.setStatus("readiness-report", "AI review response invalid");
+		ctx.ui.notify("AI response was not valid JSON", "warning");
+	}
+
+	return parsed ? { parsed, raw: responseText } : undefined;
 };
 
 const buildMarkdownReport = (report: Report, narrative?: string) => {
@@ -2517,13 +2608,11 @@ const buildReport = async (pi: ExtensionAPI, ctx: ExtensionCommandContext, args:
 
 	setStatus("Evaluating criteria...");
 	const criteria = buildCriteria();
-	const results = evaluateCriteria(criteria, repoContext);
-	const maturity = computeMaturity(results);
-	const actionItems = buildActionItems(results);
+	const baselineResults = evaluateCriteria(criteria, repoContext);
 	setProgress([
 		`Languages: ${languages.length ? languages.join(", ") : "Unknown"}`,
 		`Apps discovered: ${apps.length}`,
-		`Criteria evaluated: ${results.length}`,
+		`Criteria loaded: ${criteria.length}`,
 	]);
 
 	const generatedAt = new Date().toISOString();
@@ -2534,9 +2623,9 @@ const buildReport = async (pi: ExtensionAPI, ctx: ExtensionCommandContext, args:
 	const jsonPath = path.join(reportDir, "readiness-report.json");
 	const mdPath = path.join(reportDir, "readiness-report.md");
 
-	const categories = computeCategoryStats(results);
-	const history = loadHistory(repoRoot);
-	history.push({ generatedAt, level: maturity.levelAchieved, score: maturity.score });
+	let results = baselineResults;
+	let maturity = computeMaturity(results);
+	let actionItems = buildActionItems(results);
 
 	const report: Report = {
 		generatedAt,
@@ -2545,15 +2634,15 @@ const buildReport = async (pi: ExtensionAPI, ctx: ExtensionCommandContext, args:
 		languages,
 		apps,
 		maturity,
-		categories,
-		history,
+		categories: [],
+		history: [],
 		criteria: results,
 		actionItems,
 		paths: { html: htmlPath, json: jsonPath, md: mdPath },
 	};
 
 	setStatus("Preparing AI prompt...");
-	const prompt = buildNarrativePrompt(report, repoSnapshot);
+	const prompt = buildModelReviewPrompt(criteria, report, repoSnapshot);
 	report.aiPrompt = prompt;
 
 	const modelRef = resolveModelRef(ctx, args);
@@ -2574,14 +2663,38 @@ const buildReport = async (pi: ExtensionAPI, ctx: ExtensionCommandContext, args:
 	}
 
 	setStatus("Running AI review... (agent response)");
-	const narrativeResult = await generateNarrative(pi, prompt, ctx);
+	setProgress([
+		`Languages: ${languages.length ? languages.join(", ") : "Unknown"}`,
+		`Apps discovered: ${apps.length}`,
+		`AI review: prompt sent (${prompt.length.toLocaleString()} chars)`,
+	]);
+	const modelReview = await requestModelReview(pi, prompt, ctx);
 	if (ctx.model) {
 		report.model = { provider: ctx.model.provider, id: ctx.model.id };
 	}
 
+	if (!modelReview) {
+		throw new Error("AI review did not return valid JSON. Please retry.");
+	}
+
+	results = mapModelScores(criteria, report, modelReview.parsed);
+	maturity = computeMaturity(results);
+	actionItems = modelReview.parsed.actionItems?.length ? modelReview.parsed.actionItems : buildActionItems(results);
+
+	report.criteria = results;
+	report.maturity = {
+		...maturity,
+		levelAchieved: modelReview.parsed.levelAchieved ?? maturity.levelAchieved,
+		score: modelReview.parsed.score ?? maturity.score,
+	};
+	report.actionItems = actionItems;
+	report.categories = computeCategoryStats(results);
+	report.history = loadHistory(repoRoot);
+	report.history.push({ generatedAt, level: report.maturity.levelAchieved, score: report.maturity.score });
+
 	setStatus("Rendering reports...");
 	const html = renderHtml(report);
-	const markdown = buildMarkdownReport(report, narrativeResult?.narrative);
+	const markdown = buildMarkdownReport(report, modelReview.parsed.narrativeMarkdown ?? modelReview.raw);
 	fs.writeFileSync(htmlPath, html, "utf8");
 	fs.writeFileSync(mdPath, markdown, "utf8");
 	fs.writeFileSync(jsonPath, JSON.stringify(report, null, 2), "utf8");
