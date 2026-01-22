@@ -1,6 +1,4 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import { complete } from "@mariozechner/pi-ai";
-import { Text } from "@mariozechner/pi-tui";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -94,6 +92,11 @@ const MAX_WALK_DEPTH = 4;
 
 type ModelRef = { provider: string; id: string };
 
+type ContentBlock = {
+	type?: string;
+	text?: string;
+};
+
 let lastSelectedModel: ModelRef | undefined;
 
 const parseModelArg = (args: string) => {
@@ -118,6 +121,20 @@ const resolveModelRef = (ctx: ExtensionCommandContext, args: string) => {
 	const [provider, id] = modelId.split("/");
 	if (!provider || !id) return undefined;
 	return { provider, id } satisfies ModelRef;
+};
+
+const extractTextParts = (content: unknown): string[] => {
+	if (typeof content === "string") return [content];
+	if (!Array.isArray(content)) return [];
+	const parts: string[] = [];
+	for (const item of content) {
+		if (!item || typeof item !== "object") continue;
+		const block = item as ContentBlock;
+		if (block.type === "text" && typeof block.text === "string") {
+			parts.push(block.text);
+		}
+	}
+	return parts;
 };
 
 const tierToLevel: Record<CriterionTier, number> = {
@@ -2240,8 +2257,9 @@ const buildNarrativePrompt = (report: Report, repoSnapshot: string) => {
 
 	return [
 		"You are reviewing a software repository for readiness.",
-		"Provide a concise Markdown summary with sections: Executive Summary, Strengths, Gaps, Next Actions.",
+		"Respond in Markdown with sections: Executive Summary, Strengths, Gaps, Next Actions.",
 		"Use only the data provided. Do not invent tooling or files.",
+		"Do not call tools. Provide the narrative only.",
 		"Repository snapshot:",
 		repoSnapshot,
 		"Structured metrics:",
@@ -2249,45 +2267,36 @@ const buildNarrativePrompt = (report: Report, repoSnapshot: string) => {
 	].join("\n");
 };
 
-const generateNarrative = async (prompt: string, ctx: ExtensionCommandContext, args: string) => {
-	const modelRef = resolveModelRef(ctx, args);
-	if (!modelRef) return undefined;
-	const model = ctx.modelRegistry.find(modelRef.provider, modelRef.id);
-	if (!model) return undefined;
-	const apiKey = await ctx.modelRegistry.getApiKey(model);
-	if (!apiKey) return undefined;
+const generateNarrative = async (pi: ExtensionAPI, prompt: string, ctx: ExtensionCommandContext) => {
+	if (!ctx.isIdle()) {
+		await ctx.waitForIdle();
+	}
+	const beforeCount = ctx.sessionManager.getEntries().length;
 
 	if (ctx.hasUI) {
-		ctx.ui.setStatus("readiness-report", `AI review in progress (${modelRef.provider}/${modelRef.id})...`);
-		ctx.ui.notify(`AI review: ${modelRef.provider}/${modelRef.id}`, "info");
+		ctx.ui.setStatus("readiness-report", "AI review in progress (agent response)...");
 		ctx.ui.setWidget("readiness-report-progress", [
-			"AI review: running",
-			`Model: ${modelRef.provider}/${modelRef.id}`,
+			"AI review: awaiting agent response",
 			`Prompt size: ${prompt.length.toLocaleString()} chars`,
 		]);
 	}
 
-	const messages = [
-		{
-			role: "user" as const,
-			content: [{ type: "text" as const, text: prompt }],
-			timestamp: Date.now(),
-		},
-	];
+	pi.sendUserMessage(prompt);
+	await ctx.waitForIdle();
 
-	const response = await complete(model, { messages }, { apiKey, reasoningEffort: "medium" });
-	const narrative = response.content
-		.filter((item): item is { type: "text"; text: string } => item.type === "text")
-		.map((item) => item.text)
-		.join("\n")
-		.trim();
+	const entries = ctx.sessionManager.getEntries().slice(beforeCount);
+	const assistantMessages = entries.filter(
+		(entry) => entry.type === "message" && entry.message?.role === "assistant",
+	);
+	const lastMessage = assistantMessages.at(-1)?.message;
+	const narrative = lastMessage ? extractTextParts(lastMessage.content).join("\n").trim() : undefined;
 
 	if (ctx.hasUI) {
 		ctx.ui.setStatus("readiness-report", "AI review completed");
 	}
 
 	if (!narrative) return undefined;
-	return { narrative, model: modelRef };
+	return { narrative };
 };
 
 const buildMarkdownReport = (report: Report, narrative?: string) => {
@@ -2544,17 +2553,21 @@ const buildReport = async (pi: ExtensionAPI, ctx: ExtensionCommandContext, args:
 	const prompt = buildNarrativePrompt(report, repoSnapshot);
 	report.aiPrompt = prompt;
 
-	pi.sendMessage({
-		customType: "readiness-report-prompt",
-		content: prompt,
-		display: true,
-		details: { repo: repoName },
-	});
+	const modelRef = resolveModelRef(ctx, args);
+	if (modelRef) {
+		const model = ctx.modelRegistry.find(modelRef.provider, modelRef.id);
+		if (model) {
+			const switched = await pi.setModel(model);
+			if (switched && ctx.hasUI) {
+				ctx.ui.notify(`Model set to ${modelRef.provider}/${modelRef.id}`, "info");
+			}
+		}
+	}
 
-	setStatus("Running AI review... (if model available)");
-	const narrativeResult = await generateNarrative(prompt, ctx, args);
-	if (narrativeResult?.model) {
-		report.model = narrativeResult.model;
+	setStatus("Running AI review... (agent response)");
+	const narrativeResult = await generateNarrative(pi, prompt, ctx);
+	if (ctx.model) {
+		report.model = { provider: ctx.model.provider, id: ctx.model.id };
 	}
 
 	setStatus("Rendering reports...");
@@ -2568,12 +2581,6 @@ const buildReport = async (pi: ExtensionAPI, ctx: ExtensionCommandContext, args:
 };
 
 export default function (pi: ExtensionAPI) {
-	pi.registerMessageRenderer("readiness-report-prompt", (message, _options, theme) => {
-		const header = theme.fg("accent", theme.bold("User: Readiness report prompt"));
-		const body = theme.fg("muted", typeof message.content === "string" ? message.content : JSON.stringify(message.content));
-		return new Text(`${header}\n${body}`, 0, 0);
-	});
-
 	pi.on("session_start", async (_event, ctx) => {
 		if (ctx.model) {
 			lastSelectedModel = { provider: ctx.model.provider, id: ctx.model.id };
