@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { complete } from "@mariozechner/pi-ai";
+import { Text } from "@mariozechner/pi-tui";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -2543,6 +2544,13 @@ const buildReport = async (pi: ExtensionAPI, ctx: ExtensionCommandContext, args:
 	const prompt = buildNarrativePrompt(report, repoSnapshot);
 	report.aiPrompt = prompt;
 
+	pi.sendMessage({
+		customType: "readiness-report-prompt",
+		content: prompt,
+		display: true,
+		details: { repo: repoName },
+	});
+
 	setStatus("Running AI review... (if model available)");
 	const narrativeResult = await generateNarrative(prompt, ctx, args);
 	if (narrativeResult?.model) {
@@ -2560,6 +2568,12 @@ const buildReport = async (pi: ExtensionAPI, ctx: ExtensionCommandContext, args:
 };
 
 export default function (pi: ExtensionAPI) {
+	pi.registerMessageRenderer("readiness-report-prompt", (message, _options, theme) => {
+		const header = theme.fg("accent", theme.bold("User: Readiness report prompt"));
+		const body = theme.fg("muted", typeof message.content === "string" ? message.content : JSON.stringify(message.content));
+		return new Text(`${header}\n${body}`, 0, 0);
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		if (ctx.model) {
 			lastSelectedModel = { provider: ctx.model.provider, id: ctx.model.id };
